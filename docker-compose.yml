@@ -1,0 +1,56 @@
+# Docker Compose for GeminiWatermarkTool Web Application
+# Development Environment
+
+services:
+  # FastAPI Backend (builds binary inside Docker for correct architecture)
+  backend:
+    build:
+      context: .
+      dockerfile: web/backend/Dockerfile
+      args:
+        - BUILDKIT_INLINE_CACHE=1
+    image: geminiwatermarktool-backend:latest
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./web/backend/.env
+    volumes:
+      - ./web/backend/src:/app/src:ro
+      - upload-tmp:/tmp/uploads
+      - output-tmp:/tmp/outputs
+    command: ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Next.js Frontend
+  frontend:
+    image: node:20-alpine
+    working_dir: /app
+    ports:
+      - "3000:3000"
+    env_file:
+      - ./web/frontend/.env.local
+    volumes:
+      - ./web/frontend:/app
+      - /app/node_modules
+      - /app/.next
+    depends_on:
+      - backend
+    command: sh -c "npm install && npm run dev"
+    environment:
+      - NODE_ENV=development
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+
+volumes:
+  upload-tmp:
+    driver: local
+  output-tmp:
+    driver: local
+
+networks:
+  default:
+    name: geminiwatermarktool-network

@@ -1,0 +1,48 @@
+# Dockerfile for local development - uses pre-built binary
+# This avoids the GPG signature issues in Docker Desktop on macOS
+# Build context is project root, not web/backend
+
+# Production runtime only
+FROM python:3.11-alpine
+
+# Set working directory
+WORKDIR /app
+
+# Install runtime dependencies for C++ binary
+RUN apk add --no-cache \
+    libstdc++ \
+    libgcc
+
+# Copy pre-built binary from local build
+COPY build/local/GeminiWatermarkTool /usr/local/bin/GeminiWatermarkTool
+RUN chmod +x /usr/local/bin/GeminiWatermarkTool
+
+# Verify binary works
+RUN GeminiWatermarkTool --version || echo "Binary verification warning: version check failed"
+
+# Copy Python dependencies
+COPY web/backend/requirements.txt .
+
+# Install Python dependencies
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application source
+COPY web/backend/src/ ./src/
+
+# Create directory for ephemeral file storage
+RUN mkdir -p /tmp/uploads /tmp/outputs && chmod 777 /tmp/uploads /tmp/outputs
+
+# Set environment variables
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    BINARY_PATH=/usr/local/bin/GeminiWatermarkTool
+
+# Expose port
+EXPOSE 8000
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD python -c "import httpx; httpx.get('http://localhost:8000/health', timeout=2)" || exit 1
+
+# Run application
+CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]

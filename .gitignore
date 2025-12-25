@@ -61,3 +61,24 @@ test_output/
 # Logs
 *.log
 
+# Web Application (Node.js/Python)
+node_modules/
+.next/
+out/
+dist/
+*.pyc
+__pycache__/
+.venv/
+venv/
+*.egg-info/
+.env
+.env.local
+.env.*.local
+
+# Docker
+docker-compose.override.yml
+
+# Temporary uploads
+/web/backend/tmp/
+/tmp/
+

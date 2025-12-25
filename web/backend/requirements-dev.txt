@@ -1,0 +1,16 @@
+# Development Dependencies
+-r requirements.txt
+
+# Testing
+pytest==7.4.3
+pytest-asyncio==0.21.1
+pytest-cov==4.1.0
+
+# Code Quality
+black==23.12.1
+mypy==1.7.1
+flake8==6.1.0
+isort==5.13.2
+
+# Type Stubs
+types-Pillow==10.1.0.2

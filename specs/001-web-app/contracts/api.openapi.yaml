@@ -1,0 +1,540 @@
+openapi: 3.0.3
+info:
+  title: GeminiWatermarkTool Web API
+  version: 1.0.0
+  description: |
+    REST API for removing Gemini watermarks from images through a web interface.
+    
+    **Features:**
+    - Single and batch image processing
+    - Cloudflare Turnstile bot protection
+    - Rate limiting (10 requests/minute per IP)
+    - Ephemeral storage (1-hour max retention)
+    
+    **Architecture:**
+    - Backend: Python FastAPI
+    - Processing: C++ GeminiWatermarkTool binary
+    - Deployment: Google Kubernetes Engine (GKE)
+  
+  contact:
+    name: GeminiWatermarkTool API Support
+    url: https://github.com/allenk/GeminiWatermarkTool
+  
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: https://api.geminiwatermarktool.com
+    description: Production API (GKE)
+  - url: https://dev-api.geminiwatermarktool.com
+    description: Development API
+  - url: http://localhost:8000
+    description: Local development server
+
+tags:
+  - name: watermark
+    description: Watermark removal operations
+  - name: health
+    description: Health check and monitoring endpoints
+
+paths:
+  /api/v1/remove-watermark:
+    post:
+      tags:
+        - watermark
+      summary: Remove watermark from image(s)
+      description: |
+        Upload one or more images to remove Gemini watermarks. Requires valid Cloudflare Turnstile token.
+        
+        **Rate Limit:** 10 requests per minute per IP address.
+        
+        **File Constraints:**
+        - Max file size: 10MB per image
+        - Max files per request: 10 (batch processing)
+        - Supported formats: JPG, JPEG, PNG, WebP, BMP
+        
+        **Processing Time:**
+        - Single image (2MB): ~5 seconds
+        - Batch (10 images): ~30 seconds
+      
+      operationId: removeWatermark
+      
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - files
+                - turnstile_token
+              properties:
+                files:
+                  type: array
+                  items:
+                    type: string
+                    format: binary
+                  minItems: 1
+                  maxItems: 10
+                  description: Image files to process (1-10 files)
+                
+                turnstile_token:
+                  type: string
+                  minLength: 100
+                  maxLength: 600
+                  description: Cloudflare Turnstile verification token
+                  example: "0.AAAAA..."
+      
+      responses:
+        '200':
+          description: Successfully processed image(s)
+          headers:
+            X-RateLimit-Limit:
+              description: Maximum requests per minute
+              schema:
+                type: integer
+                example: 10
+            X-RateLimit-Remaining:
+              description: Remaining requests in current window
+              schema:
+                type: integer
+                example: 9
+            X-RateLimit-Reset:
+              description: Unix timestamp when rate limit resets
+              schema:
+                type: integer
+                example: 1703548800
+          
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/SingleImageResponse'
+                  - $ref: '#/components/schemas/BatchImageResponse'
+              
+              examples:
+                singleImage:
+                  summary: Single image processed
+                  value:
+                    session_id: "550e8400-e29b-41d4-a716-446655440000"
+                    processed_at: "2025-12-25T10:30:00Z"
+                    jobs:
+                      - job_id: "660e8400-e29b-41d4-a716-446655440001"
+                        status: "completed"
+                        file_name: "image.jpg"
+                        duration_ms: 4523
+                        watermark_size: "large_96x96"
+                        processed_image_base64: "/9j/4AAQSkZJRgABAQAAAQABAAD..."
+                
+                batchImages:
+                  summary: Batch images processed
+                  value:
+                    session_id: "550e8400-e29b-41d4-a716-446655440000"
+                    processed_at: "2025-12-25T10:30:00Z"
+                    total_jobs: 3
+                    successful_jobs: 3
+                    failed_jobs: 0
+                    jobs:
+                      - job_id: "660e8400-e29b-41d4-a716-446655440001"
+                        status: "completed"
+                        file_name: "image1.jpg"
+                        duration_ms: 4523
+                        watermark_size: "large_96x96"
+                      - job_id: "660e8400-e29b-41d4-a716-446655440002"
+                        status: "completed"
+                        file_name: "image2.png"
+                        duration_ms: 3891
+                        watermark_size: "small_48x48"
+                      - job_id: "660e8400-e29b-41d4-a716-446655440003"
+                        status: "completed"
+                        file_name: "image3.webp"
+                        duration_ms: 4102
+                        watermark_size: "large_96x96"
+                    download_url: "/api/v1/download/{session_id}"
+        
+        '400':
+          description: Bad request - invalid input
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                invalidFormat:
+                  summary: Unsupported file format
+                  value:
+                    error: "bad_request"
+                    message: "Unsupported file format: GIF. Supported formats: JPG, JPEG, PNG, WebP, BMP"
+                    details:
+                      file_name: "image.gif"
+                      received_format: "gif"
+                      supported_formats: ["jpg", "jpeg", "png", "webp", "bmp"]
+                
+                fileTooLarge:
+                  summary: File size exceeds limit
+                  value:
+                    error: "bad_request"
+                    message: "File size exceeds 10MB limit"
+                    details:
+                      file_name: "large_image.jpg"
+                      file_size_bytes: 15728640
+                      max_size_bytes: 10485760
+                
+                turnstileMissing:
+                  summary: Missing Turnstile token
+                  value:
+                    error: "bad_request"
+                    message: "Turnstile token is required"
+        
+        '401':
+          description: Unauthorized - Turnstile verification failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: "unauthorized"
+                message: "Turnstile verification failed. Please complete the verification challenge."
+                details:
+                  turnstile_error: "invalid-input-response"
+        
+        '413':
+          description: Payload too large
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: "payload_too_large"
+                message: "Request payload exceeds maximum size"
+        
+        '429':
+          description: Too many requests - rate limit exceeded
+          headers:
+            X-RateLimit-Limit:
+              schema:
+                type: integer
+              example: 10
+            X-RateLimit-Remaining:
+              schema:
+                type: integer
+              example: 0
+            X-RateLimit-Reset:
+              schema:
+                type: integer
+              example: 1703548860
+            Retry-After:
+              description: Seconds until rate limit resets
+              schema:
+                type: integer
+              example: 60
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: "rate_limit_exceeded"
+                message: "Rate limit exceeded. Maximum 10 requests per minute."
+                details:
+                  retry_after_seconds: 60
+        
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: "processing_failed"
+                message: "Failed to process image. Binary execution error."
+                details:
+                  job_id: "660e8400-e29b-41d4-a716-446655440001"
+                  error_details: "Binary exit code 1: Corrupted image data"
+        
+        '504':
+          description: Gateway timeout - processing took too long
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: "timeout"
+                message: "Processing timeout exceeded 30 seconds"
+  
+  /api/v1/download/{session_id}:
+    get:
+      tags:
+        - watermark
+      summary: Download batch processed images as ZIP
+      description: |
+        Download all processed images from a batch session as a ZIP archive.
+        
+        **Note:** Only available for batch processing (multiple files uploaded).
+        For single image processing, the processed image is returned directly in the POST response.
+      
+      operationId: downloadBatch
+      
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          description: Session ID from batch processing response
+          schema:
+            type: string
+            format: uuid
+          example: "550e8400-e29b-41d4-a716-446655440000"
+      
+      responses:
+        '200':
+          description: ZIP archive containing processed images
+          content:
+            application/zip:
+              schema:
+                type: string
+                format: binary
+          headers:
+            Content-Disposition:
+              description: Filename for downloaded ZIP
+              schema:
+                type: string
+              example: 'attachment; filename="processed_images.zip"'
+        
+        '404':
+          description: Session not found or expired
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: "not_found"
+                message: "Session not found or has expired (1-hour retention)"
+                details:
+                  session_id: "550e8400-e29b-41d4-a716-446655440000"
+  
+  /health:
+    get:
+      tags:
+        - health
+      summary: Health check endpoint
+      description: |
+        Basic health check for Kubernetes liveness probe.
+        Returns 200 OK if service is running.
+      
+      operationId: healthCheck
+      
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: "healthy"
+                  timestamp:
+                    type: string
+                    format: date-time
+                    example: "2025-12-25T10:30:00Z"
+  
+  /readiness:
+    get:
+      tags:
+        - health
+      summary: Readiness check endpoint
+      description: |
+        Readiness check for Kubernetes readiness probe.
+        Verifies that service can accept traffic (GeminiWatermarkTool binary is accessible).
+      
+      operationId: readinessCheck
+      
+      responses:
+        '200':
+          description: Service is ready to accept traffic
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: "ready"
+                  binary_available:
+                    type: boolean
+                    example: true
+                  timestamp:
+                    type: string
+                    format: date-time
+                    example: "2025-12-25T10:30:00Z"
+        
+        '503':
+          description: Service is not ready
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: "not_ready"
+                  binary_available:
+                    type: boolean
+                    example: false
+                  error:
+                    type: string
+                    example: "GeminiWatermarkTool binary not found"
+
+components:
+  schemas:
+    SingleImageResponse:
+      type: object
+      required:
+        - session_id
+        - processed_at
+        - jobs
+      properties:
+        session_id:
+          type: string
+          format: uuid
+          description: Unique session identifier
+          example: "550e8400-e29b-41d4-a716-446655440000"
+        
+        processed_at:
+          type: string
+          format: date-time
+          description: Timestamp when processing completed
+          example: "2025-12-25T10:30:00Z"
+        
+        jobs:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProcessingJob'
+          minItems: 1
+          maxItems: 1
+    
+    BatchImageResponse:
+      type: object
+      required:
+        - session_id
+        - processed_at
+        - total_jobs
+        - successful_jobs
+        - failed_jobs
+        - jobs
+      properties:
+        session_id:
+          type: string
+          format: uuid
+          description: Unique session identifier
+          example: "550e8400-e29b-41d4-a716-446655440000"
+        
+        processed_at:
+          type: string
+          format: date-time
+          description: Timestamp when batch processing completed
+          example: "2025-12-25T10:30:00Z"
+        
+        total_jobs:
+          type: integer
+          minimum: 2
+          maximum: 10
+          description: Total number of images processed
+          example: 5
+        
+        successful_jobs:
+          type: integer
+          minimum: 0
+          description: Number of successfully processed images
+          example: 4
+        
+        failed_jobs:
+          type: integer
+          minimum: 0
+          description: Number of failed processing jobs
+          example: 1
+        
+        jobs:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProcessingJob'
+          minItems: 2
+          maxItems: 10
+        
+        download_url:
+          type: string
+          format: uri
+          description: URL to download ZIP archive of processed images
+          example: "/api/v1/download/550e8400-e29b-41d4-a716-446655440000"
+    
+    ProcessingJob:
+      type: object
+      required:
+        - job_id
+        - status
+        - file_name
+      properties:
+        job_id:
+          type: string
+          format: uuid
+          description: Unique job identifier
+          example: "660e8400-e29b-41d4-a716-446655440001"
+        
+        status:
+          type: string
+          enum: [pending, processing, completed, failed]
+          description: Current job status
+          example: "completed"
+        
+        file_name:
+          type: string
+          description: Original filename (sanitized)
+          example: "image.jpg"
+        
+        duration_ms:
+          type: integer
+          minimum: 0
+          description: Processing duration in milliseconds
+          example: 4523
+        
+        watermark_size:
+          type: string
+          enum: [small_48x48, large_96x96, unknown]
+          description: Detected watermark size
+          example: "large_96x96"
+        
+        processed_image_base64:
+          type: string
+          format: byte
+          description: Base64-encoded processed image (single image only)
+          example: "/9j/4AAQSkZJRgABAQAAAQABAAD..."
+        
+        error_message:
+          type: string
+          description: Error details if status is failed
+          example: "Corrupted image data"
+    
+    ErrorResponse:
+      type: object
+      required:
+        - error
+        - message
+      properties:
+        error:
+          type: string
+          description: Machine-readable error code
+          example: "bad_request"
+        
+        message:
+          type: string
+          description: Human-readable error message
+          example: "Unsupported file format"
+        
+        details:
+          type: object
+          description: Additional error context
+          additionalProperties: true
+
+  securitySchemes: {}
+
+security: []

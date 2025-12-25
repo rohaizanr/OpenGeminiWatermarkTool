@@ -1,0 +1,9 @@
+# FastAPI Backend Dependencies
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+python-multipart==0.0.6
+Pillow==10.1.0
+httpx==0.25.2
+slowapi==0.1.9
+pydantic==2.5.2
+pydantic-settings==2.1.0
